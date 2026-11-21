@@ -126,9 +126,17 @@ jobs:
           echo 'CONFIG_NOMOUNT=y' >> arch/arm64/configs/gki_defconfig
           ls fs/nomount
 
+      - name: Cek LTO di build script
+        working-directory: ${{ env.KROOT }}
+        run: grep -rn -i 'lto' kernel_device_modules-6.1/build.sh kernel_device_modules-6.1/build.config* kernel-6.1/arch/arm64/configs/gki_defconfig || true
+
       - name: Build
         working-directory: ${{ env.KROOT }}
         run: ./kernel_device_modules-6.1/build.sh
+
+      - name: Cek LTO hasil build
+        working-directory: ${{ env.KROOT }}
+        run: find out -name .config -exec grep -H '^CONFIG_LTO' {} + || true
 
       - name: Paket AnyKernel3
         working-directory: ${{ env.KROOT }}
