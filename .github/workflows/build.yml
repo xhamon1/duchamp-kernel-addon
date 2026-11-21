@@ -1,0 +1,122 @@
+name: Build duchamp kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest_branch:
+        description: Branch mt6897-devs/kernel_manifest
+        default: lineage-23.2
+      kernel_dir:
+        description: Folder source GKI di dalam hasil repo sync
+        default: common
+      ksu_repo:
+        default: https://github.com/pershoot/KernelSU-Next
+      ksu_branch:
+        default: dev-susfs
+      susfs_branch:
+        default: gki-android14-6.1
+      susfs_commit:
+        description: Commit SUSFS (kosong = terbaru)
+        default: ''
+      nomount_builtin:
+        description: NoMount built-in (false = pakai LKM dari ZIP NoMount)
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: bash
+    env:
+      KROOT: /mnt/kernel
+      KDIR: /mnt/kernel/${{ inputs.kernel_dir }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          large-packages: false
+
+      - name: Tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y git curl python3 zip rsync
+          mkdir -p "$HOME/bin"
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
+          chmod +x "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          git config --global user.name ci
+          git config --global user.email ci@example.com
+          sudo mkdir -p "$KROOT" && sudo chown "$USER" "$KROOT"
+
+      - name: Sync source
+        working-directory: ${{ env.KROOT }}
+        run: |
+          repo init -u https://android.googlesource.com/kernel/manifest.git \
+            -b common-android14-6.1-lts --depth=1 --no-repo-verify
+          git clone --depth=1 -b "${{ inputs.manifest_branch }}" \
+            https://github.com/mt6897-devs/kernel_manifest .repo/local_manifests
+          repo sync -c -j8 --no-tags --no-clone-bundle --fail-fast
+          ls
+          test -d "$KDIR" || { echo "::error::folder '${{ inputs.kernel_dir }}' tidak ada, lihat listing di atas lalu isi input kernel_dir"; exit 1; }
+          test -f kernel_device_modules-6.1/build.sh || { echo "::error::build.sh tidak ada"; exit 1; }
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL) ' "$KDIR/Makefile"
+
+      - name: Hapus protected exports (wajib untuk GKI custom)
+        run: rm -f "$KDIR"/android/abi_gki_protected_exports_*
+
+      - name: SUSFS patch
+        working-directory: ${{ env.KROOT }}
+        run: |
+          git clone -b "${{ inputs.susfs_branch }}" https://gitlab.com/simonpunk/susfs4ksu.git
+          [ -z "${{ inputs.susfs_commit }}" ] || git -C susfs4ksu checkout "${{ inputs.susfs_commit }}"
+          git -C susfs4ksu log -1 --oneline
+          cp -r susfs4ksu/kernel_patches/fs/. "$KDIR/fs/"
+          cp -r susfs4ksu/kernel_patches/include/linux/. "$KDIR/include/linux/"
+          cd "$KDIR"
+          patch -p1 --forward --no-backup-if-mismatch < ../susfs4ksu/kernel_patches/50_add_susfs_in_${{ inputs.susfs_branch }}.patch || true
+          if find . -name '*.rej' | grep -q .; then
+            find . -name '*.rej' -exec sh -c 'echo "== $1"; cat "$1"' _ {} \;
+            echo "::error::patch SUSFS ada hunk yang ditolak"; exit 1
+          fi
+
+      - name: KernelSU-Next
+        working-directory: ${{ env.KDIR }}
+        run: |
+          git clone --depth=1 -b "${{ inputs.ksu_branch }}" "${{ inputs.ksu_repo }}" KernelSU-Next
+          ln -sfn ../KernelSU-Next/kernel drivers/kernelsu
+          echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+          sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          printf 'CONFIG_KSU=y\nCONFIG_KSU_SUSFS=y\nCONFIG_KPROBES=y\nCONFIG_KPROBE_EVENTS=y\n' >> arch/arm64/configs/gki_defconfig
+
+      - name: NoMount
+        if: ${{ inputs.nomount_builtin }}
+        working-directory: ${{ env.KDIR }}
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh | bash -s dev
+          echo 'CONFIG_NOMOUNT=y' >> arch/arm64/configs/gki_defconfig
+          ls fs/nomount
+
+      - name: Build
+        working-directory: ${{ env.KROOT }}
+        run: ./kernel_device_modules-6.1/build.sh
+
+      - name: Paket AnyKernel3
+        working-directory: ${{ env.KROOT }}
+        run: |
+          IMG=$(find out -type f -name Image | head -n1)
+          [ -n "$IMG" ] || { echo "::error::Image tidak ditemukan"; ls -R out | head -80; exit 1; }
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 ak3
+          rm -rf ak3/.git ak3/.github ak3/README.md ak3/LICENSE
+          cp "$GITHUB_WORKSPACE/anykernel/anykernel.sh" ak3/anykernel.sh
+          cp "$IMG" ak3/Image
+          (cd ak3 && zip -r9 "$GITHUB_WORKSPACE/duchamp-$(date +%Y%m%d-%H%M).zip" . -x '*.git*')
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: duchamp-kernel-zip
+          path: duchamp-*.zip
