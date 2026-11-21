@@ -8,7 +8,7 @@ on:
         default: lineage-23.2
       kernel_dir:
         description: Folder source GKI di dalam hasil repo sync
-        default: common
+        default: kernel-6.1
       ksu_repo:
         default: https://github.com/pershoot/KernelSU-Next
       ksu_branch:
