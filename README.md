@@ -15,7 +15,7 @@ The goal of this repo is to **build the kernel from the same base as the ROM and
 | Component | Source |
 |---|---|
 | Kernel source (GKI 6.1 + MediaTek modules) | `mt6897-devs/kernel_manifest`, branch `lineage-23.2` |
-| Root | [KernelSU-Next](https://github.com/KernelSU-Next/KernelSU-Next) (`pershoot` fork, branch `dev-susfs`) |
+| Root (selectable) | [KernelSU-Next](https://github.com/KernelSU-Next/KernelSU-Next) (`pershoot` fork, branch `dev-susfs`) or [BakaSU](https://github.com/Baka-SU/BakaSU) (SUSFS inline hook mode) |
 | Hiding | [SUSFS](https://gitlab.com/simonpunk/susfs4ksu) (`gki-android14-6.1`) |
 | Path redirection | [NoMount](https://github.com/maxsteeel/nomount) (branch `dev`) |
 | Flashable package | [AnyKernel3](https://github.com/osm0sis/AnyKernel3) |
@@ -48,12 +48,14 @@ Test the related features (fingerprint, AOD, touch, audio, charging) after flash
 
 1. Fork or copy this repo.
 2. Open **Actions → Build duchamp kernel → Run workflow**. The default inputs are correct for duchamp.
-3. Wait about 15-30 minutes. The result is in **Artifacts** as `duchamp-kernel-zip`.
+3. Wait about 15-30 minutes. Pick `root_manager`. The result is in **Artifacts** as `duchamp-kernel-zip`, an AnyKernel3 zip named `duchamp-<root_manager>-<date>.zip` that can be flashed from recovery or with a kernel flasher app.
 
 | Input | Purpose | Default |
 |---|---|---|
 | `manifest_branch` | Branch of `mt6897-devs/kernel_manifest` | `lineage-23.2` |
 | `kernel_dir` | GKI source folder after sync | `kernel-6.1` |
+| `root_manager` | `kernelsu-next` or `bakasu`. Selects which root solution is built in | `kernelsu-next` |
+| `bakasu_branch`, `bakasu_commit` | [BakaSU](https://github.com/Baka-SU/BakaSU) source (only for `bakasu`; empty commit = latest) | `main`, empty |
 | `ksu_repo`, `ksu_branch` | KernelSU-Next source | `pershoot/KernelSU-Next`, `dev-susfs` |
 | `ksu_commit` | KernelSU-Next commit, empty = latest | empty |
 | `ksu_version`, `ksu_tag` | Version code and tag the manager displays. Empty = latest official KernelSU-Next `dev` (computed on every build) | empty |
