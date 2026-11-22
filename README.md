@@ -28,10 +28,10 @@ Build settings:
 
 ## Differences from the ROM kernel
 
-This kernel is **not an exact copy** of the ROM kernel. Comparing `/proc/config.gz` shows:
+This kernel is built from the same sources and config overlay as the ROM kernel, but it is not a bit-for-bit copy of the maintainer's prebuilt binary. Differences:
 
 - Intended additions: `CONFIG_KSU`, the `CONFIG_KSU_SUSFS_*` options and `CONFIG_NOMOUNT`.
-- Xiaomi/duchamp-specific options that are present in the ROM kernel but missing from this build, because the driver sources are not part of the `mt6897-devs` manifest. Examples: `MI_DISP_LHBM`, `MI_DISP_VDO_AOD`, `XIAOMI_FINGERPRINT`, `TOUCHSCREEN_XIAOMI_TOUCHFEATURE`, `SND_SMARTPA_AW882XX`, `UFSFEATURE` and `MI_THERMAL_*`.
+- Xiaomi/duchamp-specific options come from the device overlay `kernel_device_modules-6.1/kernel/configs/duchamp.config`, which the ROM build applies and this workflow applies too (`defconfig_overlays`). Checked on device: `MI_DISP_LHBM=y`, `MI_DISP_VDO_AOD=y`, `UFSFEATURE=y`, `XIAOMI_FINGERPRINT=m`.
 - The GKI source commit is the same as the ROM kernel (`g606f36c019fa` on VoltageOS 6.3). The ROM kernel shows no `-dirty` suffix, this one does because of the added patches. The `kernel_device_modules` commit follows the branch at build time and was not compared.
 - With the ROM kernel and an LKM root, the manager shows no SUSFS. SUSFS is what this kernel adds on top; NoMount also works there as an LKM.
 
