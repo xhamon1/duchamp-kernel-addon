@@ -7,25 +7,25 @@ on:
         description: Branch mt6897-devs/kernel_manifest
         default: lineage-23.2
       kernel_dir:
-        description: Folder source GKI di dalam hasil repo sync
+        description: GKI source folder inside the repo sync result
         default: kernel-6.1
       ksu_repo:
         default: https://github.com/pershoot/KernelSU-Next
       ksu_branch:
         default: dev-susfs
       ksu_commit:
-        description: Commit KernelSU-Next (kosong = terbaru). Samakan dengan versi manager CI
+        description: KernelSU-Next commit (empty = latest). Match it to the manager build you use
         default: ''
       susfs_branch:
         default: gki-android14-6.1
       susfs_commit:
-        description: Commit SUSFS (kosong = terbaru)
+        description: SUSFS commit (empty = latest)
         default: ''
       lto:
-        description: LTO (none = tanpa LTO, aman untuk AOSP; thin/full/default)
+        description: LTO (none = no LTO, safe for AOSP; thin/full/default)
         default: none
       nomount_builtin:
-        description: NoMount built-in (false = pakai LKM dari ZIP NoMount)
+        description: Build NoMount into the kernel (false = use the LKM from the NoMount zip)
         type: boolean
         default: true
 
@@ -68,11 +68,11 @@ jobs:
             https://github.com/mt6897-devs/kernel_manifest .repo/local_manifests
           repo sync -c -j8 --no-tags --no-clone-bundle --fail-fast
           ls
-          test -d "$KDIR" || { echo "::error::folder '${{ inputs.kernel_dir }}' tidak ada, lihat listing di atas lalu isi input kernel_dir"; exit 1; }
-          test -f kernel_device_modules-6.1/build.sh || { echo "::error::build.sh tidak ada"; exit 1; }
+          test -d "$KDIR" || { echo "::error::folder '${{ inputs.kernel_dir }}' not found, check the listing above and set the kernel_dir input"; exit 1; }
+          test -f kernel_device_modules-6.1/build.sh || { echo "::error::build.sh not found"; exit 1; }
           grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL) ' "$KDIR/Makefile"
 
-      - name: Hapus protected exports (wajib untuk GKI custom)
+      - name: Remove protected exports (required for a custom GKI build)
         run: rm -f "$KDIR"/android/abi_gki_protected_exports_*
 
       - name: SUSFS patch
@@ -85,7 +85,7 @@ jobs:
           cp -r susfs4ksu/kernel_patches/include/linux/. "$KDIR/include/linux/"
           cd "$KDIR"
           patch -p1 --forward --no-backup-if-mismatch < ../susfs4ksu/kernel_patches/50_add_susfs_in_${{ inputs.susfs_branch }}.patch || true
-          # shortcut: hunk include di namespace.c dan proc/base.c gagal di 6.1.134, ditambah manual; hapus kalau patch upstream sudah cocok
+          # shortcut: the include hunks in namespace.c and proc/base.c are rejected on 6.1.134, so they are added by hand; remove once the upstream patch applies cleanly
           python3 - <<'PY'
           def add(path, text):
               s = open(path).read()
@@ -107,7 +107,7 @@ jobs:
           rm -f fs/proc/base.c.rej fs/namespace.c.rej
           if find . -name '*.rej' | grep -q .; then
             find . -name '*.rej' -exec sh -c 'echo "== $1"; cat "$1"' _ {} \;
-            echo "::error::patch SUSFS ada hunk yang ditolak"; exit 1
+            echo "::error::SUSFS patch has rejected hunks"; exit 1
           fi
 
       - name: KernelSU-Next
@@ -119,7 +119,7 @@ jobs:
           ln -sfn ../KernelSU-Next/kernel drivers/kernelsu
           echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
           sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
-          printf 'CONFIG_KSU=y\nCONFIG_KSU_SUSFS=y\nCONFIG_KPROBES=y\nCONFIG_KPROBE_EVENTS=y\n' >> arch/arm64/configs/gki_defconfig
+          printf 'CONFIG_KSU=y\nCONFIG_KSU_SUSFS=y\nCONFIG_KSU_SUSFS_ENABLE_LOG=n\nCONFIG_KPROBES=y\nCONFIG_KPROBE_EVENTS=y\n' >> arch/arm64/configs/gki_defconfig
 
       - name: NoMount
         if: ${{ inputs.nomount_builtin }}
@@ -129,19 +129,19 @@ jobs:
           echo 'CONFIG_NOMOUNT=y' >> arch/arm64/configs/gki_defconfig
           ls fs/nomount
 
-      - name: Matikan penandatanganan modul
+      - name: Disable module signing
         working-directory: ${{ env.KROOT }}
-        # shortcut: modul tidak ditandatangani, cukup selama kernel tidak memaksa tanda tangan (MODULE_SIG_FORCE); hapus kalau sign-file sudah beres
+        # shortcut: modules are left unsigned, fine as long as the kernel does not force signatures (MODULE_SIG_FORCE); remove once sign-file works
         run: |
           echo 'CONFIG_MODULE_SIG_ALL=n' >> kernel_device_modules-6.1/arch/arm64/configs/mgk_64_k61_defconfig
           echo 'CONFIG_MODULE_SIG_ALL=n' >> kernel-6.1/arch/arm64/configs/gki_defconfig
 
-      - name: Cek LTO di build script
+      - name: Check LTO in build scripts
         working-directory: ${{ env.KROOT }}
         run: grep -rn -i 'lto' kernel_device_modules-6.1/build.sh kernel_device_modules-6.1/build.config* kernel-6.1/arch/arm64/configs/gki_defconfig || true
 
-      # Hanya target kernel (Image). Target modul vendor gagal modpost karena butuh simbol dari modul Xiaomi,
-      # dan modul tidak kita flash (pakai modul bawaan ROM).
+      # Kernel target only (Image). The vendor module target fails modpost because it needs symbols
+      # from Xiaomi modules, and the modules are not flashed (the ROM's own modules are used).
       - name: Build
         working-directory: ${{ env.KROOT }}
         run: |
@@ -150,15 +150,15 @@ jobs:
             --//build/bazel_mgk_rules:kernel_version=6.1 --lto=${{ inputs.lto }} \
             //kernel_device_modules-6.1:mgk_64_k61_kernel_aarch64.user
 
-      - name: Cek LTO hasil build
+      - name: Check LTO in build output
         working-directory: ${{ env.KROOT }}
-        run: find -L bazel-bin out -name .config -exec grep -H '^CONFIG_LTO' {} + 2>/dev/null || echo "tidak ada .config yang bisa dicek"
+        run: find -L bazel-bin out -name .config -exec grep -H '^CONFIG_LTO' {} + 2>/dev/null || echo "no .config found to check"
 
-      - name: Paket AnyKernel3
+      - name: Package AnyKernel3
         working-directory: ${{ env.KROOT }}
         run: |
           IMG=$(find -L bazel-bin -type f -name Image -path '*mgk_64_k61_kernel_aarch64*' | head -n1)
-          [ -n "$IMG" ] || { echo "::error::Image tidak ditemukan"; find -L bazel-bin -maxdepth 4 | head -80; exit 1; }
+          [ -n "$IMG" ] || { echo "::error::Image not found"; find -L bazel-bin -maxdepth 4 | head -80; exit 1; }
           ls -l "$IMG"
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3 ak3
           rm -rf ak3/.git ak3/.github ak3/README.md ak3/LICENSE
