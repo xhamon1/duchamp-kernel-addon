@@ -58,6 +58,7 @@ Test the related features (fingerprint, AOD, touch, audio, charging) after flash
 | `ksu_commit` | KernelSU-Next commit, empty = latest | empty |
 | `ksu_version`, `ksu_tag` | Version code and tag the manager displays. Empty = latest official KernelSU-Next `dev` (computed on every build) | empty |
 | `susfs_branch`, `susfs_commit` | SUSFS branch and commit | `gki-android14-6.1`, empty |
+| `defconfig_overlays` | Device config overlay the ROM build applies (`kernel_device_modules-6.1/kernel/configs`). It enables the Xiaomi options | `duchamp.config` |
 | `lto` | `none`, `thin`, `full` or `default` | `none` |
 | `susfs_log` | Enable SUSFS logging. Off by default; turn it on if the build fails on `SUSFS_LOGI_RL` | `false` |
 | `nomount_builtin` | Build NoMount in. If `false`, use the LKM from the NoMount zip | `true` |
