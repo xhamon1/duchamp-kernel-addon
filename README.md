@@ -23,6 +23,7 @@ The goal of this repo is to **build the kernel from the same base as the ROM and
 Build settings:
 - **No LTO** (`--lto=none`). The ROM kernel is also `CONFIG_LTO_NONE=y`.
 - SUSFS logging is turned off (`CONFIG_KSU_SUSFS_ENABLE_LOG=n`) to avoid extra overhead.
+- The Samsung-only KernelSU-Next options (`KSU_SAMSUNG_*`) are turned off, since this is not a Samsung device.
 - Only `Image` is built and flashed. Vendor modules (Wi-Fi, display, touchscreen, etc.) keep using the ones already in the ROM.
 
 ## Differences from the ROM kernel
