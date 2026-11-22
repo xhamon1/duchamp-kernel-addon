@@ -165,7 +165,7 @@ jobs:
           echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
           sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
           SUSFS_LOG=n; [ "${{ inputs.susfs_log }}" = "true" ] && SUSFS_LOG=y
-          printf 'CONFIG_KSU=y\nCONFIG_KSU_SUSFS=y\nCONFIG_KSU_SUSFS_ENABLE_LOG=%s\nCONFIG_KPROBES=y\nCONFIG_KPROBE_EVENTS=y\n' "$SUSFS_LOG" >> arch/arm64/configs/gki_defconfig
+          printf 'CONFIG_KSU=y\nCONFIG_KSU_SUSFS=y\nCONFIG_KSU_SUSFS_ENABLE_LOG=%s\nCONFIG_KPROBES=y\nCONFIG_KPROBE_EVENTS=y\nCONFIG_KSU_SAMSUNG_KDP=n\nCONFIG_KSU_SAMSUNG_RKP=n\nCONFIG_KSU_SAMSUNG_DEFEX=n\nCONFIG_KSU_SAMSUNG_NO_PATCH_TEXT=n\n' "$SUSFS_LOG" >> arch/arm64/configs/gki_defconfig
 
       - name: NoMount
         if: ${{ inputs.nomount_builtin }}
