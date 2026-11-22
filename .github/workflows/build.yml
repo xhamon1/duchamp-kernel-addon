@@ -30,6 +30,10 @@ on:
       lto:
         description: LTO (none = no LTO, safe for AOSP; thin/full/default)
         default: none
+      susfs_log:
+        description: Enable SUSFS logging (false = off, less overhead; set true if the build fails on SUSFS_LOGI_RL)
+        type: boolean
+        default: false
       nomount_builtin:
         description: Build NoMount into the kernel (false = use the LKM from the NoMount zip)
         type: boolean
@@ -89,6 +93,24 @@ jobs:
           git -C susfs4ksu log -1 --oneline
           cp -r susfs4ksu/kernel_patches/fs/. "$KDIR/fs/"
           cp -r susfs4ksu/kernel_patches/include/linux/. "$KDIR/include/linux/"
+          # shortcut: with logging off, susfs.c still calls the rate-limited log macros (SUSFS_LOGI_RL), which upstream only defines when logging is on; define no-op fallbacks, remove once upstream fixes it
+          if [ "${{ inputs.susfs_log }}" != "true" ]; then
+            test -f "$KDIR/include/linux/susfs.h" || { echo "::error::susfs.h not found"; exit 1; }
+            cat >> "$KDIR/include/linux/susfs.h" <<'EOF'
+
+          #ifndef CONFIG_KSU_SUSFS_ENABLE_LOG
+          #ifndef SUSFS_LOGI_RL
+          #define SUSFS_LOGI_RL(fmt, ...) do {} while (0)
+          #endif
+          #ifndef SUSFS_LOGW_RL
+          #define SUSFS_LOGW_RL(fmt, ...) do {} while (0)
+          #endif
+          #ifndef SUSFS_LOGE_RL
+          #define SUSFS_LOGE_RL(fmt, ...) do {} while (0)
+          #endif
+          #endif
+          EOF
+          fi
           cd "$KDIR"
           patch -p1 --forward --no-backup-if-mismatch < ../susfs4ksu/kernel_patches/50_add_susfs_in_${{ inputs.susfs_branch }}.patch || true
           # shortcut: the include hunks in namespace.c and proc/base.c are rejected on 6.1.134, so they are added by hand; remove once the upstream patch applies cleanly
@@ -142,7 +164,8 @@ jobs:
           ln -sfn ../KernelSU-Next/kernel drivers/kernelsu
           echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
           sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
-          printf 'CONFIG_KSU=y\nCONFIG_KSU_SUSFS=y\nCONFIG_KSU_SUSFS_ENABLE_LOG=n\nCONFIG_KPROBES=y\nCONFIG_KPROBE_EVENTS=y\n' >> arch/arm64/configs/gki_defconfig
+          SUSFS_LOG=n; [ "${{ inputs.susfs_log }}" = "true" ] && SUSFS_LOG=y
+          printf 'CONFIG_KSU=y\nCONFIG_KSU_SUSFS=y\nCONFIG_KSU_SUSFS_ENABLE_LOG=%s\nCONFIG_KPROBES=y\nCONFIG_KPROBE_EVENTS=y\n' "$SUSFS_LOG" >> arch/arm64/configs/gki_defconfig
 
       - name: NoMount
         if: ${{ inputs.nomount_builtin }}
