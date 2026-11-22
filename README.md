@@ -58,6 +58,7 @@ Test the related features (fingerprint, AOD, touch, audio, charging) after flash
 | `ksu_version`, `ksu_tag` | Version code and tag the manager displays. Empty = latest official KernelSU-Next `dev` (computed on every build) | empty |
 | `susfs_branch`, `susfs_commit` | SUSFS branch and commit | `gki-android14-6.1`, empty |
 | `lto` | `none`, `thin`, `full` or `default` | `none` |
+| `susfs_log` | Enable SUSFS logging. Off by default; turn it on if the build fails on `SUSFS_LOGI_RL` | `false` |
 | `nomount_builtin` | Build NoMount in. If `false`, use the LKM from the NoMount zip | `true` |
 
 The SUSFS patch can fail if the source changes. The workflow then stops and prints the rejected hunks.
