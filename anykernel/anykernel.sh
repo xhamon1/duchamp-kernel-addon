@@ -1,6 +1,6 @@
 ### AnyKernel3 - duchamp (Poco X6 Pro) GKI Image only
 properties() { '
-kernel.string=duchamp KSU-Next SUSFS NoMount
+kernel.string=duchamp Enhanced KSU-Next SUSFS NoMount
 do.devicecheck=1
 do.modules=0
 do.systemless=0
