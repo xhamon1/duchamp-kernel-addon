@@ -27,6 +27,9 @@ on:
       susfs_commit:
         description: SUSFS commit (empty = latest)
         default: ''
+      defconfig_overlays:
+        description: Device config overlay from kernel_device_modules-6.1/kernel/configs (the ROM uses duchamp.config)
+        default: duchamp.config
       lto:
         description: LTO (none = no LTO, safe for AOSP; thin/full/default)
         default: none
@@ -190,6 +193,9 @@ jobs:
       # from Xiaomi modules, and the modules are not flashed (the ROM's own modules are used).
       - name: Build
         working-directory: ${{ env.KROOT }}
+        env:
+          # The device overlay that the ROM build applies (build.config.duchamp). Without it the Xiaomi options are missing.
+          DEFCONFIG_OVERLAYS: ${{ inputs.defconfig_overlays }}
         run: |
           tools/bazel --output_user_root="$KROOT/out" --output_base="$KROOT/out/bazel/output_base" \
             build --experimental_writable_outputs --config=stamp \
@@ -198,7 +204,7 @@ jobs:
 
       - name: Check LTO in build output
         working-directory: ${{ env.KROOT }}
-        run: find -L bazel-bin out -name .config -exec grep -H '^CONFIG_LTO' {} + 2>/dev/null || echo "no .config found to check"
+        run: find -L bazel-bin out -name .config -exec grep -HE '^CONFIG_(LTO|MI_DISP_LHBM|XIAOMI_FINGERPRINT|UFSFEATURE)' {} + 2>/dev/null || echo "no .config found to check"
 
       - name: Package AnyKernel3
         working-directory: ${{ env.KROOT }}
