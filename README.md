@@ -1,6 +1,6 @@
-# duchamp-kernel-addon
+# duchamp-kernel-enhanced
 
-A kernel for the **Poco X6 Pro (duchamp, MediaTek MT6897)**, built from the same source as the kernel shipped with the AOSP custom ROMs for duchamp ([mt6897-devs](https://github.com/mt6897-devs)), with **KernelSU-Next**, **SUSFS** and **NoMount** added.
+A kernel for the **Poco X6 Pro (duchamp, MediaTek MT6897)**, built from the same source as the kernel shipped with the AOSP custom ROMs for duchamp ([mt6897-devs](https://github.com/mt6897-devs)), with **SUSFS**, **NoMount** and a choice of root manager (**KernelSU-Next** or **BakaSU**) added. The kernel release carries an `Enhanced` tag, so it is easy to tell apart from the stock kernel.
 
 > Personal, unofficial project, shared as is. Flash at your own risk.
 
@@ -39,8 +39,11 @@ Test the related features (fingerprint, AOD, touch, audio, charging) after flash
 
 ## Status
 
-- Builds and boots on VoltageOS 6.3 (Android 17).
-- KernelSU-Next, SUSFS v2.4.0 and NoMount are detected by the manager.
+- Builds and boots on VoltageOS 6.3 (Android 17) with either root manager.
+- KernelSU-Next: working (built-in), SUSFS v2.4.0 and NoMount v2.3.1 detected, Zygisk Next, LSPosed and Morphe modules running.
+- BakaSU (`v4.2.0-rc3`, SUSFS inline hook): working (built-in), SUSFS v2.4.0, NoMount and Zygisk Next detected, existing modules still listed and running.
+- The config shows the Xiaomi options from the device overlay (`MI_DISP_LHBM`, `UFSFEATURE`) and no LTO.
+- Some modules (for example `.BRENE - SUSFS`) can spoof the kernel version shown by `uname`, so check `/proc/config.gz` or `dmesg` to see the real kernel.
 - Long-term stability and other hardware functions have not been tested thoroughly.
 - The build sandbox has no git history, so KernelSU-Next would report `v0.0.1 (1)`. The workflow sets the version code and tag itself, so the manager shows the same kind of version as with the ROM kernel (for example `v3.4.2 (33554)`). By default it computes them on every build from the latest official KernelSU-Next `dev` (`30000 + commit count`, nearest tag); `ksu_version` and `ksu_tag` override that. These numbers are only labels and can be one commit ahead of your manager build.
 
@@ -48,7 +51,10 @@ Test the related features (fingerprint, AOD, touch, audio, charging) after flash
 
 1. Fork or copy this repo.
 2. Open **Actions → Build duchamp kernel → Run workflow**. The default inputs are correct for duchamp.
-3. Wait about 15-30 minutes. Pick `root_manager`. The result is in **Artifacts** as `duchamp-kernel-zip`, an AnyKernel3 zip named `duchamp-<root_manager>-<date>.zip` that can be flashed from recovery or with a kernel flasher app.
+3. Pick `root_manager` and wait about 15-30 minutes.
+4. The **Artifacts** section has `duchamp-kernel`, which contains:
+   - `duchamp-enhanced-<root_manager>-<date>.zip`: an AnyKernel3 zip for recovery or a kernel flasher app.
+   - `manager/*.apk`: the matching root manager (KernelSU-Next spoofed build, or BakaSU). It comes from the upstream manager CI for the same commit as the kernel source. If that commit has no manager build, the latest build is used and the log shows a warning. If no APK can be fetched, the kernel zip is still produced.
 
 | Input | Purpose | Default |
 |---|---|---|
@@ -61,6 +67,7 @@ Test the related features (fingerprint, AOD, touch, audio, charging) after flash
 | `ksu_version`, `ksu_tag` | Version code and tag the manager displays. Empty = latest official KernelSU-Next `dev` (computed on every build) | empty |
 | `susfs_branch`, `susfs_commit` | SUSFS branch and commit | `gki-android14-6.1`, empty |
 | `defconfig_overlays` | Device config overlay the ROM build applies (`kernel_device_modules-6.1/kernel/configs`). It enables the Xiaomi options | `duchamp.config` |
+| `localversion` | Suffix added to the kernel release, after the version (`6.1.134-Enhanced-android14-...`). Empty = none | `-Enhanced` |
 | `lto` | `none`, `thin`, `full` or `default` | `none` |
 | `susfs_log` | Enable SUSFS logging. Off by default; turn it on if the build fails on `SUSFS_LOGI_RL` | `false` |
 | `nomount_builtin` | Build NoMount in. If `false`, use the LKM from the NoMount zip | `true` |
@@ -71,15 +78,16 @@ The SUSFS patch can fail if the source changes. The workflow then stops and prin
 
 1. **Keep the original ROM boot image** in case of a bootloop.
 2. Flash the zip from recovery, or extract `Image` and flash it manually.
-3. Reboot, then open the KernelSU-Next manager.
+3. Reboot, then install the manager APK from the artifact and open it. Use the manager that matches the root you built; the other one will show "Not installed".
 
 ## Verify
 
 ```sh
-su -c "zcat /proc/config.gz | grep -E 'NOMOUNT|KSU|LTO'"
+su -c "zcat /proc/config.gz | grep -E 'NOMOUNT|KSU|LTO|LOCALVERSION'"
+su -c "dmesg | grep -m1 'Linux version'"
 ```
 
-Expected: `CONFIG_NOMOUNT=y`, `CONFIG_KSU=y`, `CONFIG_KSU_SUSFS=y` and `CONFIG_LTO_NONE=y`.
+Expected: `CONFIG_NOMOUNT=y`, `CONFIG_KSU=y`, `CONFIG_KSU_SUSFS=y`, `CONFIG_LTO_NONE=y` and `CONFIG_LOCALVERSION="-Enhanced"`. The `dmesg` line shows the real release, with `Enhanced` after the version.
 
 ## Repo layout
 
