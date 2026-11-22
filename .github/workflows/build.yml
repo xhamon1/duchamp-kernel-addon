@@ -44,6 +44,9 @@ on:
       defconfig_overlays:
         description: Device config overlay from kernel_device_modules-6.1/kernel/configs (the ROM uses duchamp.config)
         default: duchamp.config
+      localversion:
+        description: Suffix added to the kernel release after the version (6.1.134-Enhanced-android14-...). Empty = none
+        default: -Enhanced
       lto:
         description: LTO (none = no LTO, safe for AOSP; thin/full/default)
         default: none
@@ -170,6 +173,7 @@ jobs:
             git clone -q --filter=blob:none --no-checkout https://github.com/KernelSU-Next/KernelSU-Next "$RUNNER_TEMP/ksu-official"
             [ -n "$KSU_VER" ] || KSU_VER=$((30000 + $(git -C "$RUNNER_TEMP/ksu-official" rev-list --count origin/dev)))
             [ -n "$KSU_TAG" ] || KSU_TAG=$(git -C "$RUNNER_TEMP/ksu-official" describe --tags --abbrev=0 origin/dev)
+            echo "MANAGER_SHA=$(git -C "$RUNNER_TEMP/ksu-official" rev-parse origin/dev)" >> "$GITHUB_ENV"
           fi
           echo "KernelSU-Next version label: $KSU_TAG ($KSU_VER)"
           case "$KSU_VER" in ''|*[!0-9]*) echo "::error::invalid KSU version '$KSU_VER'"; exit 1;; esac
@@ -198,6 +202,7 @@ jobs:
           B_TAG=$(git -C BakaSU describe --abbrev=0 --tags 2>/dev/null || echo v4.1.0)
           B_SHA=$(git -C BakaSU rev-parse --short=8 HEAD)
           B_BRANCH=$(git -C BakaSU branch --show-current)
+          echo "MANAGER_SHA=$(git -C BakaSU rev-parse HEAD)" >> "$GITHUB_ENV"
           echo "BakaSU version: $B_VER, tag $B_TAG, sha $B_SHA"
           # The build sandbox has no .git, and BakaSU's Kbuild errors out without it.
           # Replace its git probing with the values computed above.
@@ -237,6 +242,12 @@ jobs:
           echo 'CONFIG_MODULE_SIG_ALL=n' >> kernel_device_modules-6.1/arch/arm64/configs/mgk_64_k61_defconfig
           echo 'CONFIG_MODULE_SIG_ALL=n' >> kernel-6.1/arch/arm64/configs/gki_defconfig
 
+      - name: Kernel name
+        if: ${{ inputs.localversion != '' }}
+        working-directory: ${{ env.KDIR }}
+        # Goes into the kernel release string. Module version checks skip the release string when modversions are on.
+        run: echo 'CONFIG_LOCALVERSION="${{ inputs.localversion }}"' >> arch/arm64/configs/gki_defconfig
+
       - name: Check LTO in build scripts
         working-directory: ${{ env.KROOT }}
         run: grep -rn -i 'lto' kernel_device_modules-6.1/build.sh kernel_device_modules-6.1/build.config* kernel-6.1/arch/arm64/configs/gki_defconfig || true
@@ -270,9 +281,40 @@ jobs:
           MGR=KSU-Next; [ "${{ inputs.root_manager }}" = "bakasu" ] && MGR=BakaSU
           sed -i "s/KSU-Next/$MGR/" ak3/anykernel.sh
           cp "$IMG" ak3/Image
-          (cd ak3 && zip -r9 "$GITHUB_WORKSPACE/duchamp-${{ inputs.root_manager }}-$(date +%Y%m%d-%H%M).zip" . -x '*.git*')
+          (cd ak3 && zip -r9 "$GITHUB_WORKSPACE/duchamp-enhanced-${{ inputs.root_manager }}-$(date +%Y%m%d-%H%M).zip" . -x '*.git*')
+
+      - name: Fetch root manager APK
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Takes the APK from the upstream manager CI run for the same commit as the kernel source.
+          # shortcut: if that commit has no manager build (CI only runs on manager/kernel changes), the latest one is used and a warning is printed.
+          mkdir -p dl "$GITHUB_WORKSPACE/manager"
+          if [ "${{ inputs.root_manager }}" = "bakasu" ]; then
+            REPO=Baka-SU/BakaSU; WF=build-manager.yml; BR="${{ inputs.bakasu_branch }}"; ART=Manager-release; NAME=BakaSU-manager
+          else
+            REPO=KernelSU-Next/KernelSU-Next; WF=build-manager-ci.yml; BR=dev; ART=manager-spoofed; NAME=KernelSU-Next-spoofed-manager
+          fi
+          RUNS=$(gh run list -R "$REPO" -w "$WF" -b "$BR" -s success -L 50 --json databaseId,headSha)
+          ID=$(echo "$RUNS" | jq -r --arg s "${MANAGER_SHA:-none}" '[.[] | select(.headSha == $s)][0].databaseId // empty')
+          if [ -z "$ID" ]; then
+            echo "::warning::No manager build for the exact kernel commit (${MANAGER_SHA:-unknown}); using the latest build. Check the version in the log."
+            ID=$(echo "$RUNS" | jq -r '.[0].databaseId // empty')
+          fi
+          [ -n "$ID" ] || { echo "::warning::No manager build found for $REPO"; exit 1; }
+          echo "Manager run: https://github.com/$REPO/actions/runs/$ID"
+          gh run download "$ID" -R "$REPO" -n "$ART" -D dl
+          APK=$(find dl -name '*.apk' | head -n1)
+          [ -n "$APK" ] || { echo "::warning::No APK in artifact $ART"; exit 1; }
+          cp "$APK" "$GITHUB_WORKSPACE/manager/$NAME.apk"
+          AAPT=$(ls "${ANDROID_HOME:-/nonexistent}"/build-tools/*/aapt 2>/dev/null | tail -n1 || true)
+          [ -z "$AAPT" ] || "$AAPT" dump badging "$APK" | grep -E "^package:" || true
+          ls -l "$GITHUB_WORKSPACE/manager"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: duchamp-kernel-zip
-          path: duchamp-*.zip
+          name: duchamp-kernel
+          path: |
+            duchamp-*.zip
+            manager/*.apk
