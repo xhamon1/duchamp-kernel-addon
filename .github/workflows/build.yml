@@ -16,6 +16,12 @@ on:
       ksu_commit:
         description: KernelSU-Next commit (empty = latest). Match it to the manager build you use
         default: ''
+      ksu_version:
+        description: KernelSU version code shown by the manager (empty = latest from official KernelSU-Next dev, e.g. 33554)
+        default: ''
+      ksu_tag:
+        description: KernelSU version tag shown by the manager (empty = latest from official KernelSU-Next dev, e.g. v3.4.2)
+        default: ''
       susfs_branch:
         default: gki-android14-6.1
       susfs_commit:
@@ -112,10 +118,27 @@ jobs:
 
       - name: KernelSU-Next
         working-directory: ${{ env.KDIR }}
+        env:
+          KSU_VER: ${{ inputs.ksu_version }}
+          KSU_TAG: ${{ inputs.ksu_tag }}
         run: |
           git clone -b "${{ inputs.ksu_branch }}" "${{ inputs.ksu_repo }}" KernelSU-Next
           [ -z "${{ inputs.ksu_commit }}" ] || git -C KernelSU-Next checkout "${{ inputs.ksu_commit }}"
           git -C KernelSU-Next log -1 --oneline
+          # Latest version label: same formula as the official Kbuild (30000 + commit count on dev, nearest tag).
+          if [ -z "$KSU_VER" ] || [ -z "$KSU_TAG" ]; then
+            git clone -q --filter=blob:none --no-checkout https://github.com/KernelSU-Next/KernelSU-Next "$RUNNER_TEMP/ksu-official"
+            [ -n "$KSU_VER" ] || KSU_VER=$((30000 + $(git -C "$RUNNER_TEMP/ksu-official" rev-list --count origin/dev)))
+            [ -n "$KSU_TAG" ] || KSU_TAG=$(git -C "$RUNNER_TEMP/ksu-official" describe --tags --abbrev=0 origin/dev)
+          fi
+          echo "KernelSU-Next version label: $KSU_TAG ($KSU_VER)"
+          case "$KSU_VER" in ''|*[!0-9]*) echo "::error::invalid KSU version '$KSU_VER'"; exit 1;; esac
+          [ -n "$KSU_TAG" ] || { echo "::error::empty KSU tag"; exit 1; }
+          # The build sandbox has no .git, so Kbuild falls back to version 1 / v0.0.1.
+          # Set the fallback to the values the manager expects to display.
+          sed -i "s/^KSU_VERSION_FALLBACK := .*/KSU_VERSION_FALLBACK := $KSU_VER/; s/^KSU_VERSION_TAG_FALLBACK := .*/KSU_VERSION_TAG_FALLBACK := $KSU_TAG/" KernelSU-Next/kernel/Kbuild
+          grep -n -E '^KSU_VERSION(_TAG)?_FALLBACK' KernelSU-Next/kernel/Kbuild
+          grep -q "^KSU_VERSION_FALLBACK := $KSU_VER\$" KernelSU-Next/kernel/Kbuild || { echo "::error::KSU version fallback line not found in Kbuild"; exit 1; }
           ln -sfn ../KernelSU-Next/kernel drivers/kernelsu
           echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
           sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
