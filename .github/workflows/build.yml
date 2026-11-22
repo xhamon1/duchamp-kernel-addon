@@ -21,6 +21,9 @@ on:
       susfs_commit:
         description: Commit SUSFS (kosong = terbaru)
         default: ''
+      lto:
+        description: LTO (none = tanpa LTO, aman untuk AOSP; thin/full/default)
+        default: none
       nomount_builtin:
         description: NoMount built-in (false = pakai LKM dari ZIP NoMount)
         type: boolean
@@ -137,19 +140,26 @@ jobs:
         working-directory: ${{ env.KROOT }}
         run: grep -rn -i 'lto' kernel_device_modules-6.1/build.sh kernel_device_modules-6.1/build.config* kernel-6.1/arch/arm64/configs/gki_defconfig || true
 
+      # Hanya target kernel (Image). Target modul vendor gagal modpost karena butuh simbol dari modul Xiaomi,
+      # dan modul tidak kita flash (pakai modul bawaan ROM).
       - name: Build
         working-directory: ${{ env.KROOT }}
-        run: ./kernel_device_modules-6.1/build.sh
+        run: |
+          tools/bazel --output_user_root="$KROOT/out" --output_base="$KROOT/out/bazel/output_base" \
+            build --experimental_writable_outputs --config=stamp \
+            --//build/bazel_mgk_rules:kernel_version=6.1 --lto=${{ inputs.lto }} \
+            //kernel_device_modules-6.1:mgk_64_k61_kernel_aarch64.user
 
       - name: Cek LTO hasil build
         working-directory: ${{ env.KROOT }}
-        run: find out -name .config -exec grep -H '^CONFIG_LTO' {} + || true
+        run: find -L bazel-bin out -name .config -exec grep -H '^CONFIG_LTO' {} + 2>/dev/null || echo "tidak ada .config yang bisa dicek"
 
       - name: Paket AnyKernel3
         working-directory: ${{ env.KROOT }}
         run: |
-          IMG=$(find out -type f -name Image | head -n1)
-          [ -n "$IMG" ] || { echo "::error::Image tidak ditemukan"; ls -R out | head -80; exit 1; }
+          IMG=$(find -L bazel-bin -type f -name Image -path '*mgk_64_k61_kernel_aarch64*' | head -n1)
+          [ -n "$IMG" ] || { echo "::error::Image tidak ditemukan"; find -L bazel-bin -maxdepth 4 | head -80; exit 1; }
+          ls -l "$IMG"
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3 ak3
           rm -rf ak3/.git ak3/.github ak3/README.md ak3/LICENSE
           cp "$GITHUB_WORKSPACE/anykernel/anykernel.sh" ak3/anykernel.sh
