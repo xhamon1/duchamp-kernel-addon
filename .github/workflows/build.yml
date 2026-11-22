@@ -9,7 +9,21 @@ on:
       kernel_dir:
         description: GKI source folder inside the repo sync result
         default: kernel-6.1
+      root_manager:
+        description: Root solution built into the kernel
+        type: choice
+        options:
+          - kernelsu-next
+          - bakasu
+        default: kernelsu-next
+      bakasu_branch:
+        description: BakaSU branch (only used when root_manager = bakasu)
+        default: main
+      bakasu_commit:
+        description: BakaSU commit (empty = latest)
+        default: ''
       ksu_repo:
+        description: KernelSU-Next repo (only used when root_manager = kernelsu-next)
         default: https://github.com/pershoot/KernelSU-Next
       ksu_branch:
         default: dev-susfs
@@ -142,6 +156,7 @@ jobs:
           fi
 
       - name: KernelSU-Next
+        if: ${{ inputs.root_manager == 'kernelsu-next' }}
         working-directory: ${{ env.KDIR }}
         env:
           KSU_VER: ${{ inputs.ksu_version }}
@@ -169,6 +184,43 @@ jobs:
           sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
           SUSFS_LOG=n; [ "${{ inputs.susfs_log }}" = "true" ] && SUSFS_LOG=y
           printf 'CONFIG_KSU=y\nCONFIG_KSU_SUSFS=y\nCONFIG_KSU_SUSFS_ENABLE_LOG=%s\nCONFIG_KPROBES=y\nCONFIG_KPROBE_EVENTS=y\nCONFIG_KSU_SAMSUNG_KDP=n\nCONFIG_KSU_SAMSUNG_RKP=n\nCONFIG_KSU_SAMSUNG_DEFEX=n\nCONFIG_KSU_SAMSUNG_NO_PATCH_TEXT=n\n' "$SUSFS_LOG" >> arch/arm64/configs/gki_defconfig
+
+      - name: BakaSU
+        if: ${{ inputs.root_manager == 'bakasu' }}
+        working-directory: ${{ env.KDIR }}
+        run: |
+          # Full clone: the version code and tag come from git history.
+          git clone -b "${{ inputs.bakasu_branch }}" https://github.com/Baka-SU/BakaSU BakaSU
+          [ -z "${{ inputs.bakasu_commit }}" ] || git -C BakaSU checkout "${{ inputs.bakasu_commit }}"
+          git -C BakaSU log -1 --oneline
+          # Same formula as BakaSU's own Kbuild: 30000 + commit count + 700.
+          B_VER=$((30000 + $(git -C BakaSU rev-list --count HEAD) + 700))
+          B_TAG=$(git -C BakaSU describe --abbrev=0 --tags 2>/dev/null || echo v4.1.0)
+          B_SHA=$(git -C BakaSU rev-parse --short=8 HEAD)
+          B_BRANCH=$(git -C BakaSU branch --show-current)
+          echo "BakaSU version: $B_VER, tag $B_TAG, sha $B_SHA"
+          # The build sandbox has no .git, and BakaSU's Kbuild errors out without it.
+          # Replace its git probing with the values computed above.
+          python3 - "$B_VER" "$B_TAG" "$B_SHA" "${B_BRANCH:-main}" <<'PY'
+          import re, sys
+          ver, tag, sha, branch = sys.argv[1:]
+          f = "BakaSU/kernel/Kbuild"
+          s = open(f).read()
+          a = s.index("LOCAL_GIT_EXISTS :=")
+          b = s.index("# call subst to process placeholders")
+          fixed = ("KSU_VERSION := %s\nKSU_TAG_NAME := %s\nKSU_COMMIT_SHA := %s\nKSU_BRANCH_NAME := %s\n\n"
+                   % (ver, tag, sha, branch))
+          s = s[:a] + fixed + s[b:]
+          open(f, "w").write(s)
+          PY
+          grep -n -E '^KSU_(VERSION|TAG_NAME|COMMIT_SHA|BRANCH_NAME) :=' BakaSU/kernel/Kbuild
+          grep -q "^KSU_VERSION := $B_VER\$" BakaSU/kernel/Kbuild || { echo "::error::BakaSU Kbuild patch failed"; exit 1; }
+          ln -sfn ../BakaSU/kernel drivers/kernelsu
+          echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+          sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          SUSFS_LOG=n; [ "${{ inputs.susfs_log }}" = "true" ] && SUSFS_LOG=y
+          # CONFIG_KSU_SUSFS selects the "SUSFS Inline Hook" mode, which uses the hooks from the SUSFS kernel patch.
+          printf 'CONFIG_KSU=y\nCONFIG_KSU_SUSFS=y\nCONFIG_KSU_SUSFS_ENABLE_LOG=%s\n' "$SUSFS_LOG" >> arch/arm64/configs/gki_defconfig
 
       - name: NoMount
         if: ${{ inputs.nomount_builtin }}
@@ -215,8 +267,10 @@ jobs:
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3 ak3
           rm -rf ak3/.git ak3/.github ak3/README.md ak3/LICENSE
           cp "$GITHUB_WORKSPACE/anykernel/anykernel.sh" ak3/anykernel.sh
+          MGR=KSU-Next; [ "${{ inputs.root_manager }}" = "bakasu" ] && MGR=BakaSU
+          sed -i "s/KSU-Next/$MGR/" ak3/anykernel.sh
           cp "$IMG" ak3/Image
-          (cd ak3 && zip -r9 "$GITHUB_WORKSPACE/duchamp-$(date +%Y%m%d-%H%M).zip" . -x '*.git*')
+          (cd ak3 && zip -r9 "$GITHUB_WORKSPACE/duchamp-${{ inputs.root_manager }}-$(date +%Y%m%d-%H%M).zip" . -x '*.git*')
 
       - uses: actions/upload-artifact@v4
         with:
