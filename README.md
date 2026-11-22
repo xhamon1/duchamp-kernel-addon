@@ -31,7 +31,8 @@ This kernel is **not an exact copy** of the ROM kernel. Comparing `/proc/config.
 
 - Intended additions: `CONFIG_KSU`, the `CONFIG_KSU_SUSFS_*` options and `CONFIG_NOMOUNT`.
 - Xiaomi/duchamp-specific options that are present in the ROM kernel but missing from this build, because the driver sources are not part of the `mt6897-devs` manifest. Examples: `MI_DISP_LHBM`, `MI_DISP_VDO_AOD`, `XIAOMI_FINGERPRINT`, `TOUCHSCREEN_XIAOMI_TOUCHFEATURE`, `SND_SMARTPA_AW882XX`, `UFSFEATURE` and `MI_THERMAL_*`.
-- The source commit follows the branch at build time, so it can be newer than the one the ROM was built from.
+- The GKI source commit is the same as the ROM kernel (`g606f36c019fa` on VoltageOS 6.3). The ROM kernel shows no `-dirty` suffix, this one does because of the added patches. The `kernel_device_modules` commit follows the branch at build time and was not compared.
+- With the ROM kernel and an LKM root, the manager shows no SUSFS. SUSFS is what this kernel adds on top; NoMount also works there as an LKM.
 
 Test the related features (fingerprint, AOD, touch, audio, charging) after flashing.
 
@@ -40,7 +41,7 @@ Test the related features (fingerprint, AOD, touch, audio, charging) after flash
 - Builds and boots on VoltageOS 6.3 (Android 17).
 - KernelSU-Next, SUSFS v2.4.0 and NoMount are detected by the manager.
 - Long-term stability and other hardware functions have not been tested thoroughly.
-- The KernelSU version inside the kernel shows as `v0.0.1`, because git info does not reach the build sandbox. The spoofed manager still accepts it.
+- The build sandbox has no git history, so KernelSU-Next would report `v0.0.1 (1)`. The workflow sets the version code and tag itself, so the manager shows the same kind of version as with the ROM kernel (for example `v3.4.2 (33554)`). By default it computes them on every build from the latest official KernelSU-Next `dev` (`30000 + commit count`, nearest tag); `ksu_version` and `ksu_tag` override that. These numbers are only labels and can be one commit ahead of your manager build.
 
 ## Build
 
@@ -54,6 +55,7 @@ Test the related features (fingerprint, AOD, touch, audio, charging) after flash
 | `kernel_dir` | GKI source folder after sync | `kernel-6.1` |
 | `ksu_repo`, `ksu_branch` | KernelSU-Next source | `pershoot/KernelSU-Next`, `dev-susfs` |
 | `ksu_commit` | KernelSU-Next commit, empty = latest | empty |
+| `ksu_version`, `ksu_tag` | Version code and tag the manager displays. Empty = latest official KernelSU-Next `dev` (computed on every build) | empty |
 | `susfs_branch`, `susfs_commit` | SUSFS branch and commit | `gki-android14-6.1`, empty |
 | `lto` | `none`, `thin`, `full` or `default` | `none` |
 | `nomount_builtin` | Build NoMount in. If `false`, use the LKM from the NoMount zip | `true` |
