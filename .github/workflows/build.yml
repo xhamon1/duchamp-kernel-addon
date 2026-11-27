@@ -4,58 +4,60 @@ on:
   workflow_dispatch:
     inputs:
       manifest_branch:
-        description: Branch mt6897-devs/kernel_manifest
+        description: kernel_manifest branch
         default: lineage-23.2
       kernel_dir:
-        description: GKI source folder inside the repo sync result
+        description: GKI source folder
         default: kernel-6.1
       root_manager:
-        description: Root solution built into the kernel
+        description: Root manager
         type: choice
         options:
           - kernelsu-next
           - bakasu
         default: kernelsu-next
       bakasu_branch:
-        description: BakaSU branch (only used when root_manager = bakasu)
+        description: BakaSU branch
         default: main
       bakasu_commit:
-        description: BakaSU commit (empty = latest)
+        description: BakaSU commit, empty for latest
         default: ''
       ksu_repo:
-        description: KernelSU-Next repo (only used when root_manager = kernelsu-next)
+        description: KernelSU-Next repo
         default: https://github.com/pershoot/KernelSU-Next
       ksu_branch:
+        description: KernelSU-Next branch
         default: dev-susfs
       ksu_commit:
-        description: KernelSU-Next commit (empty = latest). Match it to the manager build you use
+        description: KernelSU-Next commit, empty for latest
         default: ''
       ksu_version:
-        description: KernelSU version code shown by the manager (empty = latest from official KernelSU-Next dev, e.g. 33554)
+        description: Version code shown by the manager, empty for latest
         default: ''
       ksu_tag:
-        description: KernelSU version tag shown by the manager (empty = latest from official KernelSU-Next dev, e.g. v3.4.2)
+        description: Version tag shown by the manager, empty for latest
         default: ''
       susfs_branch:
+        description: SUSFS branch
         default: gki-android14-6.1
       susfs_commit:
-        description: SUSFS commit (empty = latest)
+        description: SUSFS commit, empty for latest
         default: ''
       defconfig_overlays:
-        description: Device config overlay from kernel_device_modules-6.1/kernel/configs (the ROM uses duchamp.config)
+        description: Device config overlay
         default: duchamp.config
       localversion:
-        description: Suffix added to the kernel release after the version (6.1.134-Enhanced-android14-...). Empty = none
+        description: Kernel release suffix, empty for none
         default: -Enhanced
       lto:
-        description: LTO (none = no LTO, safe for AOSP; thin/full/default)
+        description: LTO mode
         default: none
       susfs_log:
-        description: Enable SUSFS logging (false = off, less overhead; set true if the build fails on SUSFS_LOGI_RL)
+        description: SUSFS logging
         type: boolean
         default: false
       nomount_builtin:
-        description: Build NoMount into the kernel (false = use the LKM from the NoMount zip)
+        description: Build NoMount into the kernel
         type: boolean
         default: true
 
@@ -78,7 +80,7 @@ jobs:
           tool-cache: false
           large-packages: false
 
-      - name: Tools
+      - name: Install tools
         run: |
           sudo apt-get update && sudo apt-get install -y git curl python3 zip rsync
           mkdir -p "$HOME/bin"
@@ -98,14 +100,14 @@ jobs:
             https://github.com/mt6897-devs/kernel_manifest .repo/local_manifests
           repo sync -c -j8 --no-tags --no-clone-bundle --fail-fast
           ls
-          test -d "$KDIR" || { echo "::error::folder '${{ inputs.kernel_dir }}' not found, check the listing above and set the kernel_dir input"; exit 1; }
+          test -d "$KDIR" || { echo "::error::${{ inputs.kernel_dir }} not found"; exit 1; }
           test -f kernel_device_modules-6.1/build.sh || { echo "::error::build.sh not found"; exit 1; }
           grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL) ' "$KDIR/Makefile"
 
-      - name: Remove protected exports (required for a custom GKI build)
+      - name: Remove protected exports
         run: rm -f "$KDIR"/android/abi_gki_protected_exports_*
 
-      - name: SUSFS patch
+      - name: Apply SUSFS
         working-directory: ${{ env.KROOT }}
         run: |
           git clone -b "${{ inputs.susfs_branch }}" https://gitlab.com/simonpunk/susfs4ksu.git
@@ -113,7 +115,6 @@ jobs:
           git -C susfs4ksu log -1 --oneline
           cp -r susfs4ksu/kernel_patches/fs/. "$KDIR/fs/"
           cp -r susfs4ksu/kernel_patches/include/linux/. "$KDIR/include/linux/"
-          # shortcut: with logging off, susfs.c still calls the rate-limited log macros (SUSFS_LOGI_RL), which upstream only defines when logging is on; define no-op fallbacks, remove once upstream fixes it
           if [ "${{ inputs.susfs_log }}" != "true" ]; then
             test -f "$KDIR/include/linux/susfs.h" || { echo "::error::susfs.h not found"; exit 1; }
             cat >> "$KDIR/include/linux/susfs.h" <<'EOF'
@@ -133,15 +134,15 @@ jobs:
           fi
           cd "$KDIR"
           patch -p1 --forward --no-backup-if-mismatch < ../susfs4ksu/kernel_patches/50_add_susfs_in_${{ inputs.susfs_branch }}.patch || true
-          # shortcut: the include hunks in namespace.c and proc/base.c are rejected on 6.1.134, so they are added by hand; remove once the upstream patch applies cleanly
           python3 - <<'PY'
           def add(path, text):
-              s = open(path).read()
-              if "<linux/susfs_def.h>" in s:
+              src = open(path).read()
+              if "<linux/susfs_def.h>" in src:
                   return
-              a = '#include "internal.h"'
-              i = s.index(a) + len(a)
-              open(path, "w").write(s[:i] + "\n" + text + s[i:])
+              anchor = '#include "internal.h"'
+              pos = src.index(anchor) + len(anchor)
+              open(path, "w").write(src[:pos] + "\n" + text + src[pos:])
+
           add("fs/proc/base.c",
               "#if defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)\n"
               "#include <linux/susfs_def.h>\n#endif")
@@ -155,10 +156,10 @@ jobs:
           rm -f fs/proc/base.c.rej fs/namespace.c.rej
           if find . -name '*.rej' | grep -q .; then
             find . -name '*.rej' -exec sh -c 'echo "== $1"; cat "$1"' _ {} \;
-            echo "::error::SUSFS patch has rejected hunks"; exit 1
+            echo "::error::rejected SUSFS hunks"; exit 1
           fi
 
-      - name: KernelSU-Next
+      - name: Add KernelSU-Next
         if: ${{ inputs.root_manager == 'kernelsu-next' }}
         working-directory: ${{ env.KDIR }}
         env:
@@ -168,66 +169,71 @@ jobs:
           git clone -b "${{ inputs.ksu_branch }}" "${{ inputs.ksu_repo }}" KernelSU-Next
           [ -z "${{ inputs.ksu_commit }}" ] || git -C KernelSU-Next checkout "${{ inputs.ksu_commit }}"
           git -C KernelSU-Next log -1 --oneline
-          # Latest version label: same formula as the official Kbuild (30000 + commit count on dev, nearest tag).
           if [ -z "$KSU_VER" ] || [ -z "$KSU_TAG" ]; then
-            git clone -q --filter=blob:none --no-checkout https://github.com/KernelSU-Next/KernelSU-Next "$RUNNER_TEMP/ksu-official"
-            [ -n "$KSU_VER" ] || KSU_VER=$((30000 + $(git -C "$RUNNER_TEMP/ksu-official" rev-list --count origin/dev)))
-            [ -n "$KSU_TAG" ] || KSU_TAG=$(git -C "$RUNNER_TEMP/ksu-official" describe --tags --abbrev=0 origin/dev)
-            echo "MANAGER_SHA=$(git -C "$RUNNER_TEMP/ksu-official" rev-parse origin/dev)" >> "$GITHUB_ENV"
+            ref="$RUNNER_TEMP/ksu-official"
+            git clone -q --filter=blob:none --no-checkout https://github.com/KernelSU-Next/KernelSU-Next "$ref"
+            [ -n "$KSU_VER" ] || KSU_VER=$((30000 + $(git -C "$ref" rev-list --count origin/dev)))
+            [ -n "$KSU_TAG" ] || KSU_TAG=$(git -C "$ref" describe --tags --abbrev=0 origin/dev)
+            echo "MANAGER_SHA=$(git -C "$ref" rev-parse origin/dev)" >> "$GITHUB_ENV"
           fi
-          echo "KernelSU-Next version label: $KSU_TAG ($KSU_VER)"
-          case "$KSU_VER" in ''|*[!0-9]*) echo "::error::invalid KSU version '$KSU_VER'"; exit 1;; esac
-          [ -n "$KSU_TAG" ] || { echo "::error::empty KSU tag"; exit 1; }
-          # The build sandbox has no .git, so Kbuild falls back to version 1 / v0.0.1.
-          # Set the fallback to the values the manager expects to display.
-          sed -i "s/^KSU_VERSION_FALLBACK := .*/KSU_VERSION_FALLBACK := $KSU_VER/; s/^KSU_VERSION_TAG_FALLBACK := .*/KSU_VERSION_TAG_FALLBACK := $KSU_TAG/" KernelSU-Next/kernel/Kbuild
-          grep -n -E '^KSU_VERSION(_TAG)?_FALLBACK' KernelSU-Next/kernel/Kbuild
-          grep -q "^KSU_VERSION_FALLBACK := $KSU_VER\$" KernelSU-Next/kernel/Kbuild || { echo "::error::KSU version fallback line not found in Kbuild"; exit 1; }
+          echo "version: $KSU_TAG ($KSU_VER)"
+          case "$KSU_VER" in ''|*[!0-9]*) echo "::error::bad version '$KSU_VER'"; exit 1;; esac
+          [ -n "$KSU_TAG" ] || { echo "::error::empty tag"; exit 1; }
+          kbuild=KernelSU-Next/kernel/Kbuild
+          sed -i "s/^KSU_VERSION_FALLBACK := .*/KSU_VERSION_FALLBACK := $KSU_VER/; s/^KSU_VERSION_TAG_FALLBACK := .*/KSU_VERSION_TAG_FALLBACK := $KSU_TAG/" "$kbuild"
+          grep -q "^KSU_VERSION_FALLBACK := $KSU_VER\$" "$kbuild" || { echo "::error::version patch failed"; exit 1; }
           ln -sfn ../KernelSU-Next/kernel drivers/kernelsu
           echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
           sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
-          SUSFS_LOG=n; [ "${{ inputs.susfs_log }}" = "true" ] && SUSFS_LOG=y
-          printf 'CONFIG_KSU=y\nCONFIG_KSU_SUSFS=y\nCONFIG_KSU_SUSFS_ENABLE_LOG=%s\nCONFIG_KPROBES=y\nCONFIG_KPROBE_EVENTS=y\nCONFIG_KSU_SAMSUNG_KDP=n\nCONFIG_KSU_SAMSUNG_RKP=n\nCONFIG_KSU_SAMSUNG_DEFEX=n\nCONFIG_KSU_SAMSUNG_NO_PATCH_TEXT=n\n' "$SUSFS_LOG" >> arch/arm64/configs/gki_defconfig
+          log=n; [ "${{ inputs.susfs_log }}" = "true" ] && log=y
+          {
+            echo CONFIG_KSU=y
+            echo CONFIG_KSU_SUSFS=y
+            echo CONFIG_KSU_SUSFS_ENABLE_LOG=$log
+            echo CONFIG_KPROBES=y
+            echo CONFIG_KPROBE_EVENTS=y
+            echo CONFIG_KSU_SAMSUNG_KDP=n
+            echo CONFIG_KSU_SAMSUNG_RKP=n
+            echo CONFIG_KSU_SAMSUNG_DEFEX=n
+            echo CONFIG_KSU_SAMSUNG_NO_PATCH_TEXT=n
+          } >> arch/arm64/configs/gki_defconfig
 
-      - name: BakaSU
+      - name: Add BakaSU
         if: ${{ inputs.root_manager == 'bakasu' }}
         working-directory: ${{ env.KDIR }}
         run: |
-          # Full clone: the version code and tag come from git history.
           git clone -b "${{ inputs.bakasu_branch }}" https://github.com/Baka-SU/BakaSU BakaSU
           [ -z "${{ inputs.bakasu_commit }}" ] || git -C BakaSU checkout "${{ inputs.bakasu_commit }}"
           git -C BakaSU log -1 --oneline
-          # Same formula as BakaSU's own Kbuild: 30000 + commit count + 700.
-          B_VER=$((30000 + $(git -C BakaSU rev-list --count HEAD) + 700))
-          B_TAG=$(git -C BakaSU describe --abbrev=0 --tags 2>/dev/null || echo v4.1.0)
-          B_SHA=$(git -C BakaSU rev-parse --short=8 HEAD)
-          B_BRANCH=$(git -C BakaSU branch --show-current)
+          ver=$((30000 + $(git -C BakaSU rev-list --count HEAD) + 700))
+          tag=$(git -C BakaSU describe --abbrev=0 --tags 2>/dev/null || echo v4.1.0)
+          sha=$(git -C BakaSU rev-parse --short=8 HEAD)
+          branch=$(git -C BakaSU branch --show-current)
           echo "MANAGER_SHA=$(git -C BakaSU rev-parse HEAD)" >> "$GITHUB_ENV"
-          echo "BakaSU version: $B_VER, tag $B_TAG, sha $B_SHA"
-          # The build sandbox has no .git, and BakaSU's Kbuild errors out without it.
-          # Replace its git probing with the values computed above.
-          python3 - "$B_VER" "$B_TAG" "$B_SHA" "${B_BRANCH:-main}" <<'PY'
-          import re, sys
+          echo "version: $tag ($ver) $sha"
+          python3 - "$ver" "$tag" "$sha" "${branch:-main}" <<'PY'
+          import sys
+
           ver, tag, sha, branch = sys.argv[1:]
-          f = "BakaSU/kernel/Kbuild"
-          s = open(f).read()
-          a = s.index("LOCAL_GIT_EXISTS :=")
-          b = s.index("# call subst to process placeholders")
-          fixed = ("KSU_VERSION := %s\nKSU_TAG_NAME := %s\nKSU_COMMIT_SHA := %s\nKSU_BRANCH_NAME := %s\n\n"
-                   % (ver, tag, sha, branch))
-          s = s[:a] + fixed + s[b:]
-          open(f, "w").write(s)
+          path = "BakaSU/kernel/Kbuild"
+          src = open(path).read()
+          start = src.index("LOCAL_GIT_EXISTS :=")
+          end = src.index("# call subst to process placeholders")
+          vars = "KSU_VERSION := %s\nKSU_TAG_NAME := %s\nKSU_COMMIT_SHA := %s\nKSU_BRANCH_NAME := %s\n\n" % (ver, tag, sha, branch)
+          open(path, "w").write(src[:start] + vars + src[end:])
           PY
-          grep -n -E '^KSU_(VERSION|TAG_NAME|COMMIT_SHA|BRANCH_NAME) :=' BakaSU/kernel/Kbuild
-          grep -q "^KSU_VERSION := $B_VER\$" BakaSU/kernel/Kbuild || { echo "::error::BakaSU Kbuild patch failed"; exit 1; }
+          grep -q "^KSU_VERSION := $ver\$" BakaSU/kernel/Kbuild || { echo "::error::Kbuild patch failed"; exit 1; }
           ln -sfn ../BakaSU/kernel drivers/kernelsu
           echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
           sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
-          SUSFS_LOG=n; [ "${{ inputs.susfs_log }}" = "true" ] && SUSFS_LOG=y
-          # CONFIG_KSU_SUSFS selects the "SUSFS Inline Hook" mode, which uses the hooks from the SUSFS kernel patch.
-          printf 'CONFIG_KSU=y\nCONFIG_KSU_SUSFS=y\nCONFIG_KSU_SUSFS_ENABLE_LOG=%s\n' "$SUSFS_LOG" >> arch/arm64/configs/gki_defconfig
+          log=n; [ "${{ inputs.susfs_log }}" = "true" ] && log=y
+          {
+            echo CONFIG_KSU=y
+            echo CONFIG_KSU_SUSFS=y
+            echo CONFIG_KSU_SUSFS_ENABLE_LOG=$log
+          } >> arch/arm64/configs/gki_defconfig
 
-      - name: NoMount
+      - name: Add NoMount
         if: ${{ inputs.nomount_builtin }}
         working-directory: ${{ env.KDIR }}
         run: |
@@ -237,27 +243,18 @@ jobs:
 
       - name: Disable module signing
         working-directory: ${{ env.KROOT }}
-        # shortcut: modules are left unsigned, fine as long as the kernel does not force signatures (MODULE_SIG_FORCE); remove once sign-file works
         run: |
           echo 'CONFIG_MODULE_SIG_ALL=n' >> kernel_device_modules-6.1/arch/arm64/configs/mgk_64_k61_defconfig
           echo 'CONFIG_MODULE_SIG_ALL=n' >> kernel-6.1/arch/arm64/configs/gki_defconfig
 
-      - name: Kernel name
+      - name: Set kernel name
         if: ${{ inputs.localversion != '' }}
         working-directory: ${{ env.KDIR }}
-        # Goes into the kernel release string. Module version checks skip the release string when modversions are on.
         run: echo 'CONFIG_LOCALVERSION="${{ inputs.localversion }}"' >> arch/arm64/configs/gki_defconfig
 
-      - name: Check LTO in build scripts
-        working-directory: ${{ env.KROOT }}
-        run: grep -rn -i 'lto' kernel_device_modules-6.1/build.sh kernel_device_modules-6.1/build.config* kernel-6.1/arch/arm64/configs/gki_defconfig || true
-
-      # Kernel target only (Image). The vendor module target fails modpost because it needs symbols
-      # from Xiaomi modules, and the modules are not flashed (the ROM's own modules are used).
       - name: Build
         working-directory: ${{ env.KROOT }}
         env:
-          # The device overlay that the ROM build applies (build.config.duchamp). Without it the Xiaomi options are missing.
           DEFCONFIG_OVERLAYS: ${{ inputs.defconfig_overlays }}
         run: |
           tools/bazel --output_user_root="$KROOT/out" --output_base="$KROOT/out/bazel/output_base" \
@@ -265,51 +262,49 @@ jobs:
             --//build/bazel_mgk_rules:kernel_version=6.1 --lto=${{ inputs.lto }} \
             //kernel_device_modules-6.1:mgk_64_k61_kernel_aarch64.user
 
-      - name: Check LTO in build output
+      - name: Check config
         working-directory: ${{ env.KROOT }}
-        run: find -L bazel-bin out -name .config -exec grep -HE '^CONFIG_(LTO|MI_DISP_LHBM|XIAOMI_FINGERPRINT|UFSFEATURE)' {} + 2>/dev/null || echo "no .config found to check"
+        run: find -L bazel-bin out -name .config -exec grep -HE '^CONFIG_(LTO|MI_DISP_LHBM|XIAOMI_FINGERPRINT|UFSFEATURE)' {} + 2>/dev/null || echo "no .config found"
 
-      - name: Package AnyKernel3
+      - name: Package
         working-directory: ${{ env.KROOT }}
         run: |
-          IMG=$(find -L bazel-bin -type f -name Image -path '*mgk_64_k61_kernel_aarch64*' | head -n1)
-          [ -n "$IMG" ] || { echo "::error::Image not found"; find -L bazel-bin -maxdepth 4 | head -80; exit 1; }
-          ls -l "$IMG"
+          img=$(find -L bazel-bin -type f -name Image -path '*mgk_64_k61_kernel_aarch64*' | head -n1)
+          [ -n "$img" ] || { echo "::error::Image not found"; find -L bazel-bin -maxdepth 4 | head -80; exit 1; }
+          ls -l "$img"
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3 ak3
           rm -rf ak3/.git ak3/.github ak3/README.md ak3/LICENSE
           cp "$GITHUB_WORKSPACE/anykernel/anykernel.sh" ak3/anykernel.sh
-          MGR=KSU-Next; [ "${{ inputs.root_manager }}" = "bakasu" ] && MGR=BakaSU
-          sed -i "s/KSU-Next/$MGR/" ak3/anykernel.sh
-          cp "$IMG" ak3/Image
+          mgr=KSU-Next; [ "${{ inputs.root_manager }}" = "bakasu" ] && mgr=BakaSU
+          sed -i "s/KSU-Next/$mgr/" ak3/anykernel.sh
+          cp "$img" ak3/Image
           (cd ak3 && zip -r9 "$GITHUB_WORKSPACE/duchamp-enhanced-${{ inputs.root_manager }}-$(date +%Y%m%d-%H%M).zip" . -x '*.git*')
 
-      - name: Fetch root manager APK
+      - name: Fetch manager APK
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Takes the APK from the upstream manager CI run for the same commit as the kernel source.
-          # shortcut: if that commit has no manager build (CI only runs on manager/kernel changes), the latest one is used and a warning is printed.
           mkdir -p dl "$GITHUB_WORKSPACE/manager"
           if [ "${{ inputs.root_manager }}" = "bakasu" ]; then
-            REPO=Baka-SU/BakaSU; WF=build-manager.yml; BR="${{ inputs.bakasu_branch }}"; ART=Manager-release; NAME=BakaSU-manager
+            repo=Baka-SU/BakaSU; wf=build-manager.yml; branch="${{ inputs.bakasu_branch }}"; art=Manager-release; name=BakaSU-manager
           else
-            REPO=KernelSU-Next/KernelSU-Next; WF=build-manager-ci.yml; BR=dev; ART=manager-spoofed; NAME=KernelSU-Next-spoofed-manager
+            repo=KernelSU-Next/KernelSU-Next; wf=build-manager-ci.yml; branch=dev; art=manager-spoofed; name=KernelSU-Next-spoofed-manager
           fi
-          RUNS=$(gh run list -R "$REPO" -w "$WF" -b "$BR" -s success -L 50 --json databaseId,headSha)
-          ID=$(echo "$RUNS" | jq -r --arg s "${MANAGER_SHA:-none}" '[.[] | select(.headSha == $s)][0].databaseId // empty')
-          if [ -z "$ID" ]; then
-            echo "::warning::No manager build for the exact kernel commit (${MANAGER_SHA:-unknown}); using the latest build. Check the version in the log."
-            ID=$(echo "$RUNS" | jq -r '.[0].databaseId // empty')
+          runs=$(gh run list -R "$repo" -w "$wf" -b "$branch" -s success -L 50 --json databaseId,headSha)
+          id=$(echo "$runs" | jq -r --arg s "${MANAGER_SHA:-none}" '[.[] | select(.headSha == $s)][0].databaseId // empty')
+          if [ -z "$id" ]; then
+            echo "::warning::no manager build for ${MANAGER_SHA:-unknown}, using the latest"
+            id=$(echo "$runs" | jq -r '.[0].databaseId // empty')
           fi
-          [ -n "$ID" ] || { echo "::warning::No manager build found for $REPO"; exit 1; }
-          echo "Manager run: https://github.com/$REPO/actions/runs/$ID"
-          gh run download "$ID" -R "$REPO" -n "$ART" -D dl
-          APK=$(find dl -name '*.apk' | head -n1)
-          [ -n "$APK" ] || { echo "::warning::No APK in artifact $ART"; exit 1; }
-          cp "$APK" "$GITHUB_WORKSPACE/manager/$NAME.apk"
-          AAPT=$(ls "${ANDROID_HOME:-/nonexistent}"/build-tools/*/aapt 2>/dev/null | tail -n1 || true)
-          [ -z "$AAPT" ] || "$AAPT" dump badging "$APK" | grep -E "^package:" || true
+          [ -n "$id" ] || { echo "::warning::no manager build found"; exit 1; }
+          echo "https://github.com/$repo/actions/runs/$id"
+          gh run download "$id" -R "$repo" -n "$art" -D dl
+          apk=$(find dl -name '*.apk' | head -n1)
+          [ -n "$apk" ] || { echo "::warning::no apk in $art"; exit 1; }
+          cp "$apk" "$GITHUB_WORKSPACE/manager/$name.apk"
+          aapt=$(ls "${ANDROID_HOME:-/nonexistent}"/build-tools/*/aapt 2>/dev/null | tail -n1 || true)
+          [ -z "$aapt" ] || "$aapt" dump badging "$apk" | grep -E "^package:" || true
           ls -l "$GITHUB_WORKSPACE/manager"
 
       - uses: actions/upload-artifact@v4
