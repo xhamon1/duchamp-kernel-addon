@@ -65,6 +65,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    permissions:
+      contents: write
     defaults:
       run:
         shell: bash
@@ -113,6 +115,7 @@ jobs:
           git clone -b "${{ inputs.susfs_branch }}" https://gitlab.com/simonpunk/susfs4ksu.git
           [ -z "${{ inputs.susfs_commit }}" ] || git -C susfs4ksu checkout "${{ inputs.susfs_commit }}"
           git -C susfs4ksu log -1 --oneline
+          echo "SUSFS_REV=$(git -C susfs4ksu rev-parse --short HEAD)" >> "$GITHUB_ENV"
           cp -r susfs4ksu/kernel_patches/fs/. "$KDIR/fs/"
           cp -r susfs4ksu/kernel_patches/include/linux/. "$KDIR/include/linux/"
           if [ "${{ inputs.susfs_log }}" != "true" ]; then
@@ -177,6 +180,7 @@ jobs:
             echo "MANAGER_SHA=$(git -C "$ref" rev-parse origin/dev)" >> "$GITHUB_ENV"
           fi
           echo "version: $KSU_TAG ($KSU_VER)"
+          echo "MGR_VER=$KSU_TAG ($KSU_VER), $(git -C KernelSU-Next rev-parse --short HEAD)" >> "$GITHUB_ENV"
           case "$KSU_VER" in ''|*[!0-9]*) echo "::error::bad version '$KSU_VER'"; exit 1;; esac
           [ -n "$KSU_TAG" ] || { echo "::error::empty tag"; exit 1; }
           kbuild=KernelSU-Next/kernel/Kbuild
@@ -211,6 +215,7 @@ jobs:
           branch=$(git -C BakaSU branch --show-current)
           echo "MANAGER_SHA=$(git -C BakaSU rev-parse HEAD)" >> "$GITHUB_ENV"
           echo "version: $tag ($ver) $sha"
+          echo "MGR_VER=$tag ($ver), $sha" >> "$GITHUB_ENV"
           python3 - "$ver" "$tag" "$sha" "${branch:-main}" <<'PY'
           import sys
 
@@ -306,6 +311,37 @@ jobs:
           aapt=$(ls "${ANDROID_HOME:-/nonexistent}"/build-tools/*/aapt 2>/dev/null | tail -n1 || true)
           [ -z "$aapt" ] || "$aapt" dump badging "$apk" | grep -E "^package:" || true
           ls -l "$GITHUB_WORKSPACE/manager"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          read -r kv kp ks < <(awk '/^(VERSION|PATCHLEVEL|SUBLEVEL) /{printf "%s ", $3} END{print ""}' "$KDIR/Makefile")
+          if [ "${{ inputs.root_manager }}" = "bakasu" ]; then mgr=BakaSU; else mgr=KernelSU-Next; fi
+          nm=no; [ "${{ inputs.nomount_builtin }}" = "true" ] && nm=yes
+          lg=off; [ "${{ inputs.susfs_log }}" = "true" ] && lg=on
+          tag="build-$(date +%Y%m%d-%H%M)-${{ inputs.root_manager }}"
+          {
+            echo "Kernel for Poco X6 Pro (duchamp), built from the mt6897-devs sources."
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Kernel | $kv.$kp.$ks${{ inputs.localversion }} |"
+            echo "| Source | mt6897-devs/kernel_manifest, ${{ inputs.manifest_branch }} |"
+            echo "| Device config | ${{ inputs.defconfig_overlays }} |"
+            echo "| Root manager | $mgr $MGR_VER |"
+            echo "| SUSFS | ${{ inputs.susfs_branch }}, $SUSFS_REV, logging $lg |"
+            echo "| NoMount | $nm |"
+            echo "| LTO | ${{ inputs.lto }} |"
+            echo "| Module signing | off |"
+            echo
+            echo "Files:"
+            echo "- duchamp-enhanced-*.zip: flash with a kernel flasher (AnyKernel3, Image only)"
+            echo "- *.apk: matching $mgr manager"
+          } > notes.md
+          files=(duchamp-enhanced-*.zip)
+          ls manager/*.apk > /dev/null 2>&1 && files+=(manager/*.apk)
+          gh release create "$tag" "${files[@]}" -t "duchamp $kv.$kp.$ks ${{ inputs.root_manager }} $(date +%Y-%m-%d)" -F notes.md --target "$GITHUB_SHA"
 
       - uses: actions/upload-artifact@v4
         with:
