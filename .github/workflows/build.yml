@@ -1,0 +1,351 @@
+name: Build Duchamp S1 Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest_branch:
+        description: kernel_manifest branch
+        default: lineage-23.2
+      kernel_dir:
+        description: GKI source folder
+        default: kernel-6.1
+      root_manager:
+        description: Root manager
+        type: choice
+        options:
+          - kernelsu-next
+          - bakasu
+        default: kernelsu-next
+      bakasu_branch:
+        description: BakaSU branch
+        default: main
+      bakasu_commit:
+        description: BakaSU commit, empty for latest
+        default: ''
+      ksu_repo:
+        description: KernelSU-Next repo
+        default: https://github.com/pershoot/KernelSU-Next
+      ksu_branch:
+        description: KernelSU-Next branch
+        default: dev-susfs
+      ksu_commit:
+        description: KernelSU-Next commit, empty for latest
+        default: ''
+      ksu_version:
+        description: Version code shown by the manager, empty for latest
+        default: ''
+      ksu_tag:
+        description: Version tag shown by the manager, empty for latest
+        default: ''
+      susfs_branch:
+        description: SUSFS branch
+        default: gki-android14-6.1
+      susfs_commit:
+        description: SUSFS commit, empty for latest
+        default: ''
+      defconfig_overlays:
+        description: Device config overlay
+        default: duchamp.config
+      localversion:
+        description: Kernel release suffix, empty for none
+        default: -Duchamp-S1
+      lto:
+        description: LTO mode
+        default: none
+      susfs_log:
+        description: SUSFS logging
+        type: boolean
+        default: false
+      nomount_builtin:
+        description: Build NoMount into the kernel
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    env:
+      KROOT: /mnt/kernel
+      KDIR: /mnt/kernel/${{ inputs.kernel_dir }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          large-packages: false
+
+      - name: Install tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y git curl python3 zip rsync
+          mkdir -p "$HOME/bin"
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
+          chmod +x "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          git config --global user.name ci
+          git config --global user.email ci@example.com
+          sudo mkdir -p "$KROOT" && sudo chown "$USER" "$KROOT"
+
+      - name: Sync source
+        working-directory: ${{ env.KROOT }}
+        run: |
+          repo init -u https://android.googlesource.com/kernel/manifest.git \
+            -b common-android14-6.1-lts --depth=1 --no-repo-verify
+          git clone --depth=1 -b "${{ inputs.manifest_branch }}" \
+            https://github.com/mt6897-devs/kernel_manifest .repo/local_manifests
+          repo sync -c -j8 --no-tags --no-clone-bundle --fail-fast
+          ls
+          test -d "$KDIR" || { echo "::error::${{ inputs.kernel_dir }} not found"; exit 1; }
+          test -f kernel_device_modules-6.1/build.sh || { echo "::error::build.sh not found"; exit 1; }
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL) ' "$KDIR/Makefile"
+
+      - name: Remove protected exports
+        run: rm -f "$KDIR"/android/abi_gki_protected_exports_*
+
+      - name: Apply SUSFS
+        working-directory: ${{ env.KROOT }}
+        run: |
+          git clone -b "${{ inputs.susfs_branch }}" https://gitlab.com/simonpunk/susfs4ksu.git
+          [ -z "${{ inputs.susfs_commit }}" ] || git -C susfs4ksu checkout "${{ inputs.susfs_commit }}"
+          git -C susfs4ksu log -1 --oneline
+          echo "SUSFS_REV=$(git -C susfs4ksu rev-parse --short HEAD)" >> "$GITHUB_ENV"
+          cp -r susfs4ksu/kernel_patches/fs/. "$KDIR/fs/"
+          cp -r susfs4ksu/kernel_patches/include/linux/. "$KDIR/include/linux/"
+          if [ "${{ inputs.susfs_log }}" != "true" ]; then
+            test -f "$KDIR/include/linux/susfs.h" || { echo "::error::susfs.h not found"; exit 1; }
+            cat >> "$KDIR/include/linux/susfs.h" <<'EOF'
+
+          #ifndef CONFIG_KSU_SUSFS_ENABLE_LOG
+          #ifndef SUSFS_LOGI_RL
+          #define SUSFS_LOGI_RL(fmt, ...) do {} while (0)
+          #endif
+          #ifndef SUSFS_LOGW_RL
+          #define SUSFS_LOGW_RL(fmt, ...) do {} while (0)
+          #endif
+          #ifndef SUSFS_LOGE_RL
+          #define SUSFS_LOGE_RL(fmt, ...) do {} while (0)
+          #endif
+          #endif
+          EOF
+          fi
+          cd "$KDIR"
+          patch -p1 --forward --no-backup-if-mismatch < ../susfs4ksu/kernel_patches/50_add_susfs_in_${{ inputs.susfs_branch }}.patch || true
+          python3 - <<'PY'
+          def add(path, text):
+              src = open(path).read()
+              if "<linux/susfs_def.h>" in src:
+                  return
+              anchor = '#include "internal.h"'
+              pos = src.index(anchor) + len(anchor)
+              open(path, "w").write(src[:pos] + "\n" + text + src[pos:])
+
+          add("fs/proc/base.c",
+              "#if defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)\n"
+              "#include <linux/susfs_def.h>\n#endif")
+          add("fs/namespace.c",
+              "#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif\n"
+              "#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n"
+              "extern bool susfs_is_current_ksu_domain(void);\n"
+              "extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n"
+              "#define CL_COPY_MNT_NS BIT(25)\n#endif")
+          PY
+          rm -f fs/proc/base.c.rej fs/namespace.c.rej
+          if find . -name '*.rej' | grep -q .; then
+            find . -name '*.rej' -exec sh -c 'echo "== $1"; cat "$1"' _ {} \;
+            echo "::error::rejected SUSFS hunks"; exit 1
+          fi
+
+      - name: Add KernelSU-Next
+        if: ${{ inputs.root_manager == 'kernelsu-next' }}
+        working-directory: ${{ env.KDIR }}
+        env:
+          KSU_VER: ${{ inputs.ksu_version }}
+          KSU_TAG: ${{ inputs.ksu_tag }}
+        run: |
+          git clone -b "${{ inputs.ksu_branch }}" "${{ inputs.ksu_repo }}" KernelSU-Next
+          [ -z "${{ inputs.ksu_commit }}" ] || git -C KernelSU-Next checkout "${{ inputs.ksu_commit }}"
+          git -C KernelSU-Next log -1 --oneline
+          if [ -z "$KSU_VER" ] || [ -z "$KSU_TAG" ]; then
+            ref="$RUNNER_TEMP/ksu-official"
+            git clone -q --filter=blob:none --no-checkout https://github.com/KernelSU-Next/KernelSU-Next "$ref"
+            [ -n "$KSU_VER" ] || KSU_VER=$((30000 + $(git -C "$ref" rev-list --count origin/dev)))
+            [ -n "$KSU_TAG" ] || KSU_TAG=$(git -C "$ref" describe --tags --abbrev=0 origin/dev)
+            echo "MANAGER_SHA=$(git -C "$ref" rev-parse origin/dev)" >> "$GITHUB_ENV"
+          fi
+          echo "version: $KSU_TAG ($KSU_VER)"
+          echo "MGR_VER=$KSU_TAG ($KSU_VER), $(git -C KernelSU-Next rev-parse --short HEAD)" >> "$GITHUB_ENV"
+          case "$KSU_VER" in ''|*[!0-9]*) echo "::error::bad version '$KSU_VER'"; exit 1;; esac
+          [ -n "$KSU_TAG" ] || { echo "::error::empty tag"; exit 1; }
+          kbuild=KernelSU-Next/kernel/Kbuild
+          sed -i "s/^KSU_VERSION_FALLBACK := .*/KSU_VERSION_FALLBACK := $KSU_VER/; s/^KSU_VERSION_TAG_FALLBACK := .*/KSU_VERSION_TAG_FALLBACK := $KSU_TAG/" "$kbuild"
+          grep -q "^KSU_VERSION_FALLBACK := $KSU_VER\$" "$kbuild" || { echo "::error::version patch failed"; exit 1; }
+          ln -sfn ../KernelSU-Next/kernel drivers/kernelsu
+          echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+          sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          log=n; [ "${{ inputs.susfs_log }}" = "true" ] && log=y
+          {
+            echo CONFIG_KSU=y
+            echo CONFIG_KSU_SUSFS=y
+            echo CONFIG_KSU_SUSFS_ENABLE_LOG=$log
+            echo CONFIG_KPROBES=y
+            echo CONFIG_KPROBE_EVENTS=y
+            echo CONFIG_KSU_SAMSUNG_KDP=n
+            echo CONFIG_KSU_SAMSUNG_RKP=n
+            echo CONFIG_KSU_SAMSUNG_DEFEX=n
+            echo CONFIG_KSU_SAMSUNG_NO_PATCH_TEXT=n
+          } >> arch/arm64/configs/gki_defconfig
+
+      - name: Add BakaSU
+        if: ${{ inputs.root_manager == 'bakasu' }}
+        working-directory: ${{ env.KDIR }}
+        run: |
+          git clone -b "${{ inputs.bakasu_branch }}" https://github.com/Baka-SU/BakaSU BakaSU
+          [ -z "${{ inputs.bakasu_commit }}" ] || git -C BakaSU checkout "${{ inputs.bakasu_commit }}"
+          git -C BakaSU log -1 --oneline
+          ver=$((30000 + $(git -C BakaSU rev-list --count HEAD) + 700))
+          tag=$(git -C BakaSU describe --abbrev=0 --tags 2>/dev/null || echo v4.1.0)
+          sha=$(git -C BakaSU rev-parse --short=8 HEAD)
+          branch=$(git -C BakaSU branch --show-current)
+          echo "MANAGER_SHA=$(git -C BakaSU rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "version: $tag ($ver) $sha"
+          echo "MGR_VER=$tag ($ver), $sha" >> "$GITHUB_ENV"
+          python3 - "$ver" "$tag" "$sha" "${branch:-main}" <<'PY'
+          import sys
+
+          ver, tag, sha, branch = sys.argv[1:]
+          path = "BakaSU/kernel/Kbuild"
+          src = open(path).read()
+          start = src.index("LOCAL_GIT_EXISTS :=")
+          end = src.index("# call subst to process placeholders")
+          vars = "KSU_VERSION := %s\nKSU_TAG_NAME := %s\nKSU_COMMIT_SHA := %s\nKSU_BRANCH_NAME := %s\n\n" % (ver, tag, sha, branch)
+          open(path, "w").write(src[:start] + vars + src[end:])
+          PY
+          grep -q "^KSU_VERSION := $ver\$" BakaSU/kernel/Kbuild || { echo "::error::Kbuild patch failed"; exit 1; }
+          ln -sfn ../BakaSU/kernel drivers/kernelsu
+          echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+          sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          log=n; [ "${{ inputs.susfs_log }}" = "true" ] && log=y
+          {
+            echo CONFIG_KSU=y
+            echo CONFIG_KSU_SUSFS=y
+            echo CONFIG_KSU_SUSFS_ENABLE_LOG=$log
+          } >> arch/arm64/configs/gki_defconfig
+
+      - name: Add NoMount
+        if: ${{ inputs.nomount_builtin }}
+        working-directory: ${{ env.KDIR }}
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh | bash -s dev
+          echo 'CONFIG_NOMOUNT=y' >> arch/arm64/configs/gki_defconfig
+          ls fs/nomount
+
+      - name: Disable module signing
+        working-directory: ${{ env.KROOT }}
+        run: |
+          echo 'CONFIG_MODULE_SIG_ALL=n' >> kernel_device_modules-6.1/arch/arm64/configs/mgk_64_k61_defconfig
+          echo 'CONFIG_MODULE_SIG_ALL=n' >> kernel-6.1/arch/arm64/configs/gki_defconfig
+
+      - name: Set kernel name
+        if: ${{ inputs.localversion != '' }}
+        working-directory: ${{ env.KDIR }}
+        run: echo 'CONFIG_LOCALVERSION="${{ inputs.localversion }}"' >> arch/arm64/configs/gki_defconfig
+
+      - name: Build
+        working-directory: ${{ env.KROOT }}
+        env:
+          DEFCONFIG_OVERLAYS: ${{ inputs.defconfig_overlays }}
+        run: |
+          tools/bazel --output_user_root="$KROOT/out" --output_base="$KROOT/out/bazel/output_base" \
+            build --experimental_writable_outputs --config=stamp \
+            --//build/bazel_mgk_rules:kernel_version=6.1 --lto=${{ inputs.lto }} \
+            //kernel_device_modules-6.1:mgk_64_k61_kernel_aarch64.user
+
+      - name: Check config
+        working-directory: ${{ env.KROOT }}
+        run: find -L bazel-bin out -name .config -exec grep -HE '^CONFIG_(LTO|MI_DISP_LHBM|XIAOMI_FINGERPRINT|UFSFEATURE)' {} + 2>/dev/null || echo "no .config found"
+
+      - name: Package
+        working-directory: ${{ env.KROOT }}
+        run: |
+          img=$(find -L bazel-bin -type f -name Image -path '*mgk_64_k61_kernel_aarch64*' | head -n1)
+          [ -n "$img" ] || { echo "::error::Image not found"; find -L bazel-bin -maxdepth 4 | head -80; exit 1; }
+          ls -l "$img"
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 ak3
+          rm -rf ak3/.git ak3/.github ak3/README.md ak3/LICENSE
+          cp "$GITHUB_WORKSPACE/anykernel/anykernel.sh" ak3/anykernel.sh
+          mgr=KSU-Next; [ "${{ inputs.root_manager }}" = "bakasu" ] && mgr=BakaSU
+          sed -i "s/KSU-Next/$mgr/" ak3/anykernel.sh
+          cp "$img" ak3/Image
+          (cd ak3 && zip -r9 "$GITHUB_WORKSPACE/duchamp-s1-${{ inputs.root_manager }}-$(date +%Y%m%d-%H%M).zip" . -x '*.git*')
+
+      - name: Fetch manager APK
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dl "$GITHUB_WORKSPACE/manager"
+          if [ "${{ inputs.root_manager }}" = "bakasu" ]; then
+            repo=Baka-SU/BakaSU; wf=build-manager.yml; branch="${{ inputs.bakasu_branch }}"; art=Manager-release; name=BakaSU-manager
+          else
+            repo=KernelSU-Next/KernelSU-Next; wf=build-manager-ci.yml; branch=dev; art=manager-spoofed; name=KernelSU-Next-spoofed-manager
+          fi
+          runs=$(gh run list -R "$repo" -w "$wf" -b "$branch" -s success -L 50 --json databaseId,headSha)
+          id=$(echo "$runs" | jq -r --arg s "${MANAGER_SHA:-none}" '[.[] | select(.headSha == $s)][0].databaseId // empty')
+          if [ -z "$id" ]; then
+            echo "::warning::no manager build for ${MANAGER_SHA:-unknown}, using the latest"
+            id=$(echo "$runs" | jq -r '.[0].databaseId // empty')
+          fi
+          [ -n "$id" ] || { echo "::warning::no manager build found"; exit 1; }
+          echo "https://github.com/$repo/actions/runs/$id"
+          gh run download "$id" -R "$repo" -n "$art" -D dl
+          apk=$(find dl -name '*.apk' | head -n1)
+          [ -n "$apk" ] || { echo "::warning::no apk in $art"; exit 1; }
+          cp "$apk" "$GITHUB_WORKSPACE/manager/$name.apk"
+          aapt=$(ls "${ANDROID_HOME:-/nonexistent}"/build-tools/*/aapt 2>/dev/null | tail -n1 || true)
+          [ -z "$aapt" ] || "$aapt" dump badging "$apk" | grep -E "^package:" || true
+          ls -l "$GITHUB_WORKSPACE/manager"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          read -r kv kp ks < <(awk '/^(VERSION|PATCHLEVEL|SUBLEVEL) /{printf "%s ", $3} END{print ""}' "$KDIR/Makefile")
+          if [ "${{ inputs.root_manager }}" = "bakasu" ]; then mgr=BakaSU; else mgr=KernelSU-Next; fi
+          nm=no; [ "${{ inputs.nomount_builtin }}" = "true" ] && nm=yes
+          lg=off; [ "${{ inputs.susfs_log }}" = "true" ] && lg=on
+          tag="build-$(date +%Y%m%d-%H%M)-${{ inputs.root_manager }}"
+          {
+            echo "Duchamp S1 Kernel for the Poco X6 Pro (duchamp), built from the mt6897-devs sources."
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Kernel | $kv.$kp.$ks${{ inputs.localversion }} |"
+            echo "| Source | mt6897-devs/kernel_manifest, ${{ inputs.manifest_branch }} |"
+            echo "| Device config | ${{ inputs.defconfig_overlays }} |"
+            echo "| Root manager | $mgr $MGR_VER |"
+            echo "| SUSFS | ${{ inputs.susfs_branch }}, $SUSFS_REV, logging $lg |"
+            echo "| NoMount | $nm |"
+            echo "| LTO | ${{ inputs.lto }} |"
+            echo "| Module signing | off |"
+            echo
+            echo "Files:"
+            echo "- duchamp-s1-*.zip: flash with a kernel flasher (AnyKernel3, Image only)"
+            echo "- *.apk: matching $mgr manager"
+          } > notes.md
+          files=(duchamp-s1-*.zip)
+          ls manager/*.apk > /dev/null 2>&1 && files+=(manager/*.apk)
+          gh release create "$tag" "${files[@]}" -t "Duchamp S1 $kv.$kp.$ks ${{ inputs.root_manager }} $(date +%Y-%m-%d)" -F notes.md --target "$GITHUB_SHA"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: duchamp-kernel
+          path: |
+            duchamp-*.zip
+            manager/*.apk
