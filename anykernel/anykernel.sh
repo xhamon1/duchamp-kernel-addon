@@ -1,5 +1,5 @@
 properties() { '
-kernel.string=duchamp Enhanced KSU-Next SUSFS NoMount
+kernel.string=Duchamp S1 KSU-Next SUSFS NoMount
 do.devicecheck=1
 do.modules=0
 do.systemless=0
